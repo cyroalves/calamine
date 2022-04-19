@@ -777,3 +777,21 @@ fn issue_221() {
         ]
     );
 }
+
+#[test]
+fn issue_261() {
+    setup();
+
+    // test if sheet is resolved with only one row
+    let path = format!("{}/tests/issue261.xlsx", env!("CARGO_MANIFEST_DIR"));
+    let mut excel: Xlsx<_> = open_workbook(&path).unwrap();
+
+    let range = excel.worksheet_range("Sheet1").unwrap().unwrap();
+    range_eq!(
+        range,
+        [
+            [String("a".to_string()), String("b".to_string())],
+            [Float(1.), Float(2.)]
+        ]
+    );
+}
