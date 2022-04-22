@@ -796,20 +796,42 @@ where
     ) -> Result<(), XlsxError>,
 {
     let mut buf = Vec::new();
+    let mut row_buf = Vec::new();
     let mut cell_buf = Vec::new();
+    let mut row: u32 = 0;
+    let mut col: u32 = 0;
     loop {
         buf.clear();
         match xml.read_event(&mut buf) {
-            Ok(Event::Start(ref c_element)) if c_element.local_name() == b"c" => {
-                let pos = get_attribute(c_element.attributes(), b"r")
-                    .and_then(|o| o.ok_or(XlsxError::CellRAttribute))
-                    .and_then(get_row_column)?;
+            Ok(Event::Start(ref row_element)) if row_element.local_name() == b"row" => {
                 loop {
-                    cell_buf.clear();
-                    match xml.read_event(&mut cell_buf) {
-                        Ok(Event::Start(ref e)) => push_cell(cells, xml, e, pos, c_element)?,
-                        Ok(Event::End(ref e)) if e.local_name() == b"c" => break,
-                        Ok(Event::Eof) => return Err(XlsxError::XmlEof("c")),
+                    row_buf.clear();
+                    match xml.read_event(&mut row_buf) {
+                        Ok(Event::Start(ref c_element)) if c_element.local_name() == b"c" => {
+                            col += 1;
+                            let pos_inferred = (row, col);
+                            let pos = get_attribute(c_element.attributes(), b"r")
+                                .and_then(get_row_column).unwrap_or(pos_inferred);
+
+                            loop {
+                                cell_buf.clear();
+                                match xml.read_event(&mut cell_buf) {
+                                    Ok(Event::Start(ref e)) => push_cell(cells, xml, e, pos, c_element)?,
+                                    Ok(Event::End(ref e)) if e.local_name() == b"c" => {
+                                        break
+                                    }
+                                    Ok(Event::Eof) => return Err(XlsxError::XmlEof("c")),
+                                    Err(e) => return Err(XlsxError::Xml(e)),
+                                    _ => (),
+                                }
+                            }
+                        }
+                        Ok(Event::End(ref e)) if e.local_name() == b"row" => {
+                            col = 0;
+                            row += 1;
+                            break
+                        }
+                        Ok(Event::Eof) => return Err(XlsxError::XmlEof("row")),
                         Err(e) => return Err(XlsxError::Xml(e)),
                         _ => (),
                     }
@@ -1001,7 +1023,7 @@ impl Dimensions {
 fn get_dimension(dimension: &[u8]) -> Result<Dimensions, XlsxError> {
     let parts: Vec<_> = dimension
         .split(|c| *c == b':')
-        .map(|s| get_row_column(s))
+        .map(|s| get_row_column(Some(s)))
         .collect::<Result<Vec<_>, XlsxError>>()?;
 
     match parts.len() {
@@ -1035,7 +1057,11 @@ fn get_dimension(dimension: &[u8]) -> Result<Dimensions, XlsxError> {
 }
 
 /// converts a text range name into its position (row, column) (0 based index)
-fn get_row_column(range: &[u8]) -> Result<(u32, u32), XlsxError> {
+fn get_row_column(maybe_range: Option<&[u8]>) -> Result<(u32, u32), XlsxError> {
+    if maybe_range.is_none() {
+        return Err(XlsxError::CellRAttribute);
+    }
+    let range = maybe_range.unwrap();
     let (mut row, mut col) = (0, 0);
     let mut pow = 1;
     let mut readrow = true;
@@ -1115,8 +1141,8 @@ fn read_string(xml: &mut XlsReader<'_>, closing: &[u8]) -> Result<Option<String>
 
 #[test]
 fn test_dimensions() {
-    assert_eq!(get_row_column(b"A1").unwrap(), (0, 0));
-    assert_eq!(get_row_column(b"C107").unwrap(), (106, 2));
+    assert_eq!(get_row_column(Some(b"A1")).unwrap(), (0, 0));
+    assert_eq!(get_row_column(Some(b"C107")).unwrap(), (106, 2));
     assert_eq!(
         get_dimension(b"C2:D35").unwrap(),
         Dimensions {
